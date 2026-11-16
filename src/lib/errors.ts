@@ -2,7 +2,10 @@ import type { AppErrorPayload } from '../types';
 
 const MESSAGES: Record<string, string> = {
   NOT_PDF: 'El archivo no parece un PDF válido.',
-  TOO_LARGE: 'El PDF supera el tamaño máximo permitido.',
+  NOT_DOCX: 'El archivo no parece un Word .docx válido.',
+  TOO_LARGE: 'El archivo supera el tamaño máximo permitido.',
+  DOCX_CORRUPT: 'El Word está dañado o tiene una estructura que no se puede leer.',
+  DOCX_TOO_MANY_PAGES: 'El Word tiene más páginas de las permitidas.',
   PDF_PASSWORD: 'El PDF está protegido con contraseña. Quita la protección e inténtalo de nuevo.',
   PDF_SCANNED:
     'El PDF parece escaneado (solo imágenes). Este conversor necesita texto seleccionable.',

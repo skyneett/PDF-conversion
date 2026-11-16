@@ -1,9 +1,12 @@
 import { MAX_FILENAME_LENGTH } from './constants';
 
-export function sanitizeDownloadName(originalName: string): string {
+export function sanitizeDownloadName(
+  originalName: string,
+  extension: 'docx' | 'pdf' = 'docx'
+): string {
   const withoutPath = originalName.replace(/\\/g, '/').split('/').pop() ?? '';
-  const withoutPdf = withoutPath.replace(/\.pdf$/i, '');
-  const cleaned = withoutPdf
+  const withoutExtension = withoutPath.replace(/\.(pdf|docx)$/i, '');
+  const cleaned = withoutExtension
     .normalize('NFKC')
     .replace(/[\u0000-\u001F<>:"/\\|?*]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -13,5 +16,5 @@ export function sanitizeDownloadName(originalName: string): string {
     .slice(0, MAX_FILENAME_LENGTH)
     .trim();
 
-  return `${cleaned || 'documento'}.docx`;
+  return `${cleaned || 'documento'}.${extension}`;
 }

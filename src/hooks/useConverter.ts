@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ASSET_DIRECTORY, MAX_FILE_BYTES, MAX_PAGES } from '../lib/constants';
+import { DocxRenderError, renderDocxToPages } from '../lib/docxToHtml';
 import { messageForCode } from '../lib/errors';
 import { sanitizeDownloadName } from '../lib/filename';
 import { validateSelectedFile } from '../lib/validation';
-import type { AppErrorPayload, UiPhase, WorkerMessage } from '../types';
+import type { AppErrorPayload, ConversionMode, UiPhase, WorkerMessage } from '../types';
 
 interface ConverterState {
   phase: UiPhase;
@@ -41,17 +42,30 @@ function triggerDownload(url: string, name: string): void {
   link.remove();
 }
 
-const PHASE_MESSAGES: Record<'loading' | 'validating' | 'converting', string> = {
-  loading: 'Preparando el motor de conversión…',
-  validating: 'Revisando el PDF…',
-  converting: 'Convirtiendo a Word…'
-};
+function phaseMessages(mode: ConversionMode): Record<'loading' | 'validating' | 'converting', string> {
+  if (mode === 'word-to-pdf') {
+    return {
+      loading: 'Preparando el documento…',
+      validating: 'Revisando el Word…',
+      converting: 'Convirtiendo a PDF…'
+    };
+  }
 
-export function useConverter() {
+  return {
+    loading: 'Preparando el motor de conversión…',
+    validating: 'Revisando el PDF…',
+    converting: 'Convirtiendo a Word…'
+  };
+}
+
+export function useConverter(mode: ConversionMode) {
   const [state, setState] = useState<ConverterState>(INITIAL_STATE);
   const workerRef = useRef<Worker | null>(null);
   const fileRef = useRef<File | null>(null);
   const resultUrlRef = useRef<string | null>(null);
+  const runIdRef = useRef(0);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   const revokeResult = useCallback(() => {
     if (resultUrlRef.current) {
@@ -84,7 +98,11 @@ export function useConverter() {
         revokeResult();
         resultUrlRef.current = url;
 
-        const name = sanitizeDownloadName(fileRef.current?.name ?? 'documento.pdf');
+        const outputMode = modeRef.current;
+        const name = sanitizeDownloadName(
+          fileRef.current?.name ?? (outputMode === 'word-to-pdf' ? 'documento.docx' : 'documento.pdf'),
+          outputMode === 'word-to-pdf' ? 'pdf' : 'docx'
+        );
 
         setState((previous) => ({
           ...previous,
@@ -102,7 +120,9 @@ export function useConverter() {
       }
 
       const friendly =
-        message.code === 'PDF_TOO_MANY_PAGES' || message.code === 'TOO_LARGE'
+        message.code === 'PDF_TOO_MANY_PAGES' ||
+        message.code === 'DOCX_TOO_MANY_PAGES' ||
+        message.code === 'TOO_LARGE'
           ? message.message
           : messageForCode(message.code, message.message);
 
@@ -134,9 +154,10 @@ export function useConverter() {
 
   const selectFile = useCallback(
     (file: File) => {
-      const validation = validateSelectedFile(file, MAX_FILE_BYTES);
+      const validation = validateSelectedFile(file, MAX_FILE_BYTES, mode);
 
       if (validation) {
+        runIdRef.current += 1;
         revokeResult();
         fileRef.current = null;
         setState({
@@ -147,6 +168,7 @@ export function useConverter() {
         return;
       }
 
+      runIdRef.current += 1;
       revokeResult();
       fileRef.current = file;
       setState({
@@ -154,12 +176,16 @@ export function useConverter() {
         file
       });
     },
-    [revokeResult]
+    [mode, revokeResult]
   );
 
   const convert = useCallback(() => {
     const file = fileRef.current;
     if (!file || isBusyPhase(state.phase)) return;
+
+    const runId = ++runIdRef.current;
+    const messages = phaseMessages(mode);
+    const assetPath = new URL(ASSET_DIRECTORY, document.baseURI).href;
 
     revokeResult();
     setState((previous) => ({
@@ -170,22 +196,65 @@ export function useConverter() {
       resultName: null,
       resultSize: 0,
       elapsedMs: 0,
-      statusMessage: PHASE_MESSAGES.loading
+      statusMessage: messages.loading
     }));
+
+    if (mode === 'word-to-pdf') {
+      void (async () => {
+        try {
+          setState((previous) => ({
+            ...previous,
+            phase: 'validating',
+            statusMessage: messages.validating
+          }));
+
+          const rendered = await renderDocxToPages(file, MAX_PAGES);
+          if (runId !== runIdRef.current) return;
+
+          const worker = ensureWorker();
+          worker.postMessage({
+            type: 'convert-word',
+            css: rendered.css,
+            pages: rendered.pages,
+            assetPath,
+            limits: {
+              maxPages: MAX_PAGES
+            }
+          });
+        } catch (error: unknown) {
+          if (runId !== runIdRef.current) return;
+
+          const code = error instanceof DocxRenderError ? error.code : 'DOCX_CORRUPT';
+          const message =
+            error instanceof DocxRenderError && code === 'DOCX_TOO_MANY_PAGES'
+              ? error.message
+              : messageForCode(code);
+
+          setState((previous) => ({
+            ...previous,
+            phase: 'error',
+            error: { code, message },
+            statusMessage: ''
+          }));
+        }
+      })();
+      return;
+    }
 
     const worker = ensureWorker();
     worker.postMessage({
       type: 'convert',
       file,
-      assetPath: new URL(ASSET_DIRECTORY, document.baseURI).href,
+      assetPath,
       limits: {
         maxBytes: MAX_FILE_BYTES,
         maxPages: MAX_PAGES
       }
     });
-  }, [ensureWorker, revokeResult, state.phase]);
+  }, [ensureWorker, mode, revokeResult, state.phase]);
 
   const cancel = useCallback(() => {
+    runIdRef.current += 1;
     workerRef.current?.terminate();
     workerRef.current = null;
     revokeResult();
@@ -201,6 +270,7 @@ export function useConverter() {
   }, [revokeResult]);
 
   const reset = useCallback(() => {
+    runIdRef.current += 1;
     if (workerRef.current && isBusyPhase(state.phase)) {
       workerRef.current.terminate();
       workerRef.current = null;

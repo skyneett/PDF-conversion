@@ -29,4 +29,9 @@ describe('sanitizeDownloadName', () => {
     expect(result.length).toBeLessThanOrEqual(85);
     expect(result.endsWith('.docx')).toBe(true);
   });
+
+  it('puede generar un nombre .pdf para Word a PDF', () => {
+    expect(sanitizeDownloadName('Informe.docx', 'pdf')).toBe('Informe.pdf');
+    expect(sanitizeDownloadName('C:\\Users\\yo\\Mi Word.DOCX', 'pdf')).toBe('Mi Word.pdf');
+  });
 });

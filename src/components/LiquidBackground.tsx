@@ -43,7 +43,11 @@ function makeParticle(width: number, height: number): Particle {
   };
 }
 
-export function LiquidBackground() {
+interface LiquidBackgroundProps {
+  forceAmbient?: boolean;
+}
+
+export function LiquidBackground({ forceAmbient }: LiquidBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rippleCanvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -57,7 +61,7 @@ export function LiquidBackground() {
     if (!context || !rippleContext) return;
 
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let ambientMotion = !reduceMotion.matches;
+    let ambientMotion = forceAmbient ?? !reduceMotion.matches;
 
     let width = 0;
     let height = 0;
@@ -359,6 +363,8 @@ export function LiquidBackground() {
     };
 
     const onReduceMotionChange = () => {
+      if (forceAmbient !== undefined) return;
+
       ambientMotion = !reduceMotion.matches;
 
       if (ambientMotion) {
@@ -389,7 +395,7 @@ export function LiquidBackground() {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       reduceMotion.removeEventListener('change', onReduceMotionChange);
     };
-  }, []);
+  }, [forceAmbient]);
 
   return (
     <>

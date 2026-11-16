@@ -1,3 +1,5 @@
+export type ConversionMode = 'pdf-to-word' | 'word-to-pdf';
+
 export type UiPhase =
   | 'idle'
   | 'loading'
@@ -19,7 +21,17 @@ export interface WorkerConvertRequest {
   limits: ConvertLimits;
 }
 
-export type WorkerRequest = WorkerConvertRequest;
+export interface WorkerConvertWordRequest {
+  type: 'convert-word';
+  css: string;
+  pages: string[];
+  assetPath: string;
+  limits: {
+    maxPages: number;
+  };
+}
+
+export type WorkerRequest = WorkerConvertRequest | WorkerConvertWordRequest;
 
 export interface WorkerStatusMessage {
   type: 'status';

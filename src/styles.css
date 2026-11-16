@@ -349,6 +349,55 @@ button {
   margin-bottom: 22px;
 }
 
+.mode-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
+  margin-bottom: 18px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(4, 7, 13, 0.45);
+}
+
+.mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.mode-switch button:hover {
+  color: var(--text);
+}
+
+.mode-switch button.is-active {
+  background: linear-gradient(100deg, rgba(34, 227, 195, 0.95), rgba(108, 140, 255, 0.9));
+  color: #041014;
+  box-shadow: 0 8px 22px rgba(34, 227, 195, 0.14);
+}
+
+.beta-tag {
+  padding: 2px 5px;
+  border: 1px solid rgba(34, 227, 195, 0.35);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.54rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mode-switch button.is-active .beta-tag {
+  border-color: rgba(4, 16, 20, 0.35);
+}
+
 .card-kicker {
   margin: 0 0 6px;
   color: var(--teal);
@@ -936,6 +985,36 @@ button {
   height: 15px;
 }
 
+.effects-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.effects-toggle:hover {
+  color: var(--teal);
+}
+
+.effects-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.55);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.08);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.effects-dot.is-on {
+  background: var(--teal);
+  box-shadow: 0 0 0 3px rgba(34, 227, 195, 0.14), 0 0 10px rgba(34, 227, 195, 0.6);
+}
+
 .tools-overlay {
   position: fixed;
   inset: 0;
@@ -1012,6 +1091,11 @@ button {
   border-color: rgba(34, 227, 195, 0.24);
   background: rgba(34, 227, 195, 0.08);
   color: var(--text);
+}
+
+.tool-item.is-current {
+  border-color: rgba(34, 227, 195, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(34, 227, 195, 0.12);
 }
 
 .tool-badge,

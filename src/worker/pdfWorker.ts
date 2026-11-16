@@ -1,6 +1,12 @@
 import { PyMuPDF, type PyMuPDFDocument } from '@bentopdf/pymupdf-wasm';
 import { MIN_TEXT_CHARS } from '../lib/constants';
-import type { AppErrorPayload, WorkerMessage, WorkerRequest } from '../types';
+import type {
+  AppErrorPayload,
+  WorkerConvertRequest,
+  WorkerConvertWordRequest,
+  WorkerMessage,
+  WorkerRequest
+} from '../types';
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -42,12 +48,26 @@ function getEngine(assetPath: string): Promise<PyMuPDF> {
   return enginePromise;
 }
 
-function normalizeFailure(error: unknown): AppErrorPayload {
+function normalizeFailure(error: unknown, mode: 'pdf' | 'word' = 'pdf'): AppErrorPayload {
   if (error instanceof ConvertFailure) {
     return { code: error.code, message: error.message };
   }
 
   const raw = error instanceof Error ? error.message : String(error);
+
+  if (mode === 'word') {
+    if (/page|pages|páginas/i.test(raw)) {
+      return {
+        code: 'DOCX_TOO_MANY_PAGES',
+        message: 'El Word tiene más páginas de las permitidas.'
+      };
+    }
+
+    return {
+      code: 'DOCX_CORRUPT',
+      message: 'No se pudo leer el Word. Prueba con otro archivo .docx.'
+    };
+  }
 
   if (/password|encrypt|authenticate/i.test(raw)) {
     return {
@@ -76,7 +96,7 @@ function normalizeFailure(error: unknown): AppErrorPayload {
   };
 }
 
-async function handleConvert(request: WorkerRequest): Promise<void> {
+async function handleConvert(request: WorkerConvertRequest): Promise<void> {
   const { file, assetPath, limits } = request;
   const started = performance.now();
   let document: PyMuPDFDocument | null = null;
@@ -171,8 +191,71 @@ async function handleConvert(request: WorkerRequest): Promise<void> {
   }
 }
 
+async function handleConvertWord(request: WorkerConvertWordRequest): Promise<void> {
+  const { css, pages, assetPath, limits } = request;
+  const started = performance.now();
+
+  try {
+    if (pages.length === 0) {
+      throw new ConvertFailure('DOCX_CORRUPT', 'El Word no contiene páginas legibles.');
+    }
+
+    if (pages.length > limits.maxPages) {
+      throw new ConvertFailure(
+        'DOCX_TOO_MANY_PAGES',
+        `El Word tiene ${pages.length} páginas y el máximo es ${limits.maxPages}.`
+      );
+    }
+
+    if (!engineLoaded) {
+      post({
+        type: 'status',
+        stage: 'loading',
+        message: 'Preparando el motor de conversión. La primera vez tarda un poco más.'
+      });
+    }
+
+    const engine = await getEngine(assetPath);
+
+    post({
+      type: 'status',
+      stage: 'converting',
+      message: 'Convirtiendo las páginas a PDF…'
+    });
+
+    const pdfs: Blob[] = [];
+    for (const page of pages) {
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${page}</body></html>`;
+      pdfs.push(
+        await engine.htmlToPdf(html, {
+          pageSize: 'a4',
+          margins: 0
+        })
+      );
+    }
+
+    const blob = pdfs.length === 1 ? pdfs[0] : await engine.merge(pdfs);
+
+    post({
+      type: 'result',
+      blob,
+      elapsedMs: performance.now() - started
+    });
+  } catch (error: unknown) {
+    if (import.meta.env.DEV) {
+      console.error('[pdfWorker]', error);
+    }
+    post({
+      type: 'error',
+      ...normalizeFailure(error, 'word')
+    });
+  }
+}
+
 workerScope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   if (event.data?.type === 'convert') {
     void handleConvert(event.data);
+  } else if (event.data?.type === 'convert-word') {
+    void handleConvertWord(event.data);
   }
 };

@@ -17,8 +17,62 @@ import {
 import { useConverter } from './hooks/useConverter';
 import { MAX_FILE_BYTES, MAX_PAGES } from './lib/constants';
 import { formatBytes, formatDuration } from './lib/format';
+import type { ConversionMode } from './types';
 
-const ACTIVE_TOOL = 'PDF a Word';
+const EFFECTS_STORAGE_KEY = 'paperwave:effects';
+
+const TOOL_MODES: Record<string, ConversionMode> = {
+  'PDF a Word': 'pdf-to-word',
+  'Word a PDF': 'word-to-pdf'
+};
+
+const MODE_COPY: Record<
+  ConversionMode,
+  {
+    title: string;
+    accept: string;
+    chooseLabel: string;
+    chooseAnother: string;
+    dropTitle: string;
+    dropMeta: string;
+    convertLabel: string;
+    resultTitle: string;
+  }
+> = {
+  'pdf-to-word': {
+    title: 'PDF a Word',
+    accept: '.pdf,application/pdf',
+    chooseLabel: 'Elegir un PDF',
+    chooseAnother: 'Elegir otro PDF',
+    dropTitle: 'Arrastra tu PDF aquí',
+    dropMeta: `Hasta ${formatBytes(MAX_FILE_BYTES)} · ${MAX_PAGES} páginas · sin subir a ningún servidor`,
+    convertLabel: 'Convertir a Word',
+    resultTitle: 'Word listo'
+  },
+  'word-to-pdf': {
+    title: 'Word a PDF',
+    accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    chooseLabel: 'Elegir un Word',
+    chooseAnother: 'Elegir otro Word',
+    dropTitle: 'Arrastra tu Word aquí',
+    dropMeta: `Hasta ${formatBytes(MAX_FILE_BYTES)} · .docx · sin subir a ningún servidor`,
+    convertLabel: 'Convertir a PDF',
+    resultTitle: 'PDF listo'
+  }
+};
+
+type EffectsPreference = 'auto' | 'on' | 'off';
+
+function readEffectsPreference(): EffectsPreference {
+  try {
+    const stored = window.localStorage.getItem(EFFECTS_STORAGE_KEY);
+    if (stored === 'on' || stored === 'off') return stored;
+  } catch {
+    // localStorage puede no estar disponible en modo privado.
+  }
+
+  return 'auto';
+}
 
 const TOOL_GROUPS = [
   { title: 'Organizar', items: ['Unir PDF', 'Dividir PDF', 'Extraer páginas', 'Rotar PDF', 'Ordenar PDF'] },
@@ -38,11 +92,40 @@ function scrollToConverter(): void {
 }
 
 export default function App() {
-  const converter = useConverter();
+  const [mode, setMode] = useState<ConversionMode>('pdf-to-word');
+  const converter = useConverter(mode);
+  const copy = MODE_COPY[mode];
   const inputRef = useRef<HTMLInputElement>(null);
   const closeToolsRef = useRef<HTMLButtonElement>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [effectsPreference, setEffectsPreference] = useState<EffectsPreference>(readEffectsPreference);
+
+  const systemReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const particlesEnabled =
+    effectsPreference === 'on' || (effectsPreference === 'auto' && !systemReducedMotion);
+  const forceAmbient = effectsPreference === 'auto' ? undefined : effectsPreference === 'on';
+
+  const toggleEffects = useCallback(() => {
+    setEffectsPreference((previous) => {
+      const next: EffectsPreference =
+        previous === 'off'
+          ? 'on'
+          : previous === 'on'
+            ? 'off'
+            : systemReducedMotion
+              ? 'on'
+              : 'off';
+
+      try {
+        window.localStorage.setItem(EFFECTS_STORAGE_KEY, next);
+      } catch {
+        // Si no se puede persistir, el cambio sigue funcionando en esta sesión.
+      }
+
+      return next;
+    });
+  }, [systemReducedMotion]);
 
   const openFilePicker = useCallback(() => {
     inputRef.current?.click();
@@ -65,11 +148,25 @@ export default function App() {
     [handleFiles]
   );
 
-  const handleToolClick = useCallback((tool: string) => {
-    if (tool !== ACTIVE_TOOL) return;
-    setToolsOpen(false);
-    window.setTimeout(scrollToConverter, 80);
-  }, []);
+  const switchMode = useCallback(
+    (next: ConversionMode) => {
+      if (next === mode) return;
+      converter.reset();
+      setMode(next);
+    },
+    [converter, mode]
+  );
+
+  const handleToolClick = useCallback(
+    (tool: string) => {
+      const nextMode = TOOL_MODES[tool];
+      if (!nextMode) return;
+      switchMode(nextMode);
+      setToolsOpen(false);
+      window.setTimeout(scrollToConverter, 80);
+    },
+    [switchMode]
+  );
 
   useEffect(() => {
     if (!toolsOpen) return;
@@ -93,7 +190,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <LiquidBackground />
+      <LiquidBackground forceAmbient={forceAmbient} />
 
       <header className="site-header">
         <div className="shell header-inner">
@@ -131,14 +228,14 @@ export default function App() {
         <section className="hero shell">
           <div className="eyebrow">
             <span className="pulse-dot" />
-            PDF → DOCX · 100% en tu navegador
+            PDF ↔ Word · 100% en tu navegador
           </div>
           <h1>
-            Convierte PDF a Word <span className="accent">sin subir nada.</span>
+            Convierte entre PDF y Word <span className="accent">sin subir nada.</span>
           </h1>
           <p className="lede">
-            Tu documento se convierte dentro de este navegador. No viaja a ningún servidor, no se
-            guarda y se descarta al terminar.
+            Tus documentos se convierten dentro de este navegador. No viajan a ningún servidor, no
+            se guardan y se descartan al terminar.
           </p>
           <div className="hero-chips" aria-label="Características">
             <span>
@@ -158,19 +255,38 @@ export default function App() {
             <div className="card-heading">
               <div>
                 <p className="card-kicker">Convertidor</p>
-                <h2 id="converter-title">PDF a Word</h2>
+                <h2 id="converter-title">{copy.title}</h2>
               </div>
               <span className="privacy-pill">
                 <LockIcon /> No se sube
               </span>
             </div>
 
+            <div className="mode-switch" role="group" aria-label="Tipo de conversión">
+              <button
+                type="button"
+                className={mode === 'pdf-to-word' ? 'is-active' : ''}
+                aria-pressed={mode === 'pdf-to-word'}
+                onClick={() => switchMode('pdf-to-word')}
+              >
+                PDF a Word
+              </button>
+              <button
+                type="button"
+                className={mode === 'word-to-pdf' ? 'is-active' : ''}
+                aria-pressed={mode === 'word-to-pdf'}
+                onClick={() => switchMode('word-to-pdf')}
+              >
+                Word a PDF <span className="beta-tag">Beta</span>
+              </button>
+            </div>
+
             <input
               ref={inputRef}
               className="sr-only"
               type="file"
-              accept=".pdf,application/pdf"
-              aria-label="Elegir un PDF"
+              accept={copy.accept}
+              aria-label={copy.chooseLabel}
               onChange={(event) => {
                 handleFiles(event.target.files);
                 event.target.value = '';
@@ -200,12 +316,9 @@ export default function App() {
                 <div className="dropzone-orbit">
                   <UploadIcon />
                 </div>
-                <p className="dropzone-title">Arrastra tu PDF aquí</p>
+                <p className="dropzone-title">{copy.dropTitle}</p>
                 <p className="dropzone-sub">o haz clic para elegirlo</p>
-                <p className="dropzone-meta">
-                  Hasta {formatBytes(MAX_FILE_BYTES)} · {MAX_PAGES} páginas · sin subir a ningún
-                  servidor
-                </p>
+                <p className="dropzone-meta">{copy.dropMeta}</p>
               </div>
             ) : (
               <div className="file-card">
@@ -237,7 +350,7 @@ export default function App() {
                     <span>
                       {converter.phase === 'loading'
                         ? 'La primera conversión descarga el motor (~56 MB) y queda en caché.'
-                        : 'El archivo se procesa en la memoria de tu navegador.'}
+                        : 'El documento se procesa en la memoria de tu navegador.'}
                     </span>
                   </div>
                 </div>
@@ -262,7 +375,7 @@ export default function App() {
                     <CheckIcon />
                   </span>
                   <div>
-                    <strong>Word listo</strong>
+                    <strong>{copy.resultTitle}</strong>
                     <span>
                       {converter.resultName} · {formatBytes(converter.resultSize)} ·{' '}
                       {formatDuration(converter.elapsedMs)}
@@ -284,7 +397,8 @@ export default function App() {
                   </button>
                 </div>
                 <p className="result-note">
-                  La descarga debería haber empezado. El PDF y el Word siguen solo en tu memoria.
+                  La descarga debería haber empezado. El archivo y el resultado siguen solo en tu
+                  memoria.
                 </p>
               </div>
             )}
@@ -303,7 +417,7 @@ export default function App() {
                     </button>
                   ) : (
                     <button type="button" className="button secondary" onClick={openFilePicker}>
-                      Elegir otro PDF
+                      {copy.chooseAnother}
                     </button>
                   )}
                   <button type="button" className="button ghost" onClick={converter.reset}>
@@ -336,7 +450,7 @@ export default function App() {
                 onClick={converter.convert}
                 disabled={!converter.file || converter.isBusy}
               >
-                Convertir a Word
+                {copy.convertLabel}
                 <ArrowRightIcon />
               </button>
               <p className="card-footnote">
@@ -353,7 +467,7 @@ export default function App() {
               <ShieldIcon />
             </span>
             <h3>Privacidad real</h3>
-            <p>El PDF no sale de tu equipo. No hay una API que reciba el archivo.</p>
+            <p>El archivo no sale de tu equipo. No hay una API que reciba el documento.</p>
           </article>
           <article>
             <span className="trust-icon">
@@ -383,9 +497,9 @@ export default function App() {
             <p className="card-kicker">Privacidad</p>
             <h2>Sin letra pequeña.</h2>
             <p>
-              Paperwave usa WebAssembly para ejecutar el conversor dentro de tu navegador. Tu PDF se
-              lee en memoria, se convierte y se descarga. No se envía a ningún servidor y no queda
-              almacenado en ningún sitio.
+              Paperwave usa WebAssembly para ejecutar el conversor dentro de tu navegador. Tu PDF o
+              Word se lee en memoria, se convierte y se descarga. No se envía a ningún servidor y no
+              queda almacenado en ningún sitio.
             </p>
             <p>
               Al pulsar <strong>Convertir otro</strong> o cerrar la pestaña, el archivo y el
@@ -421,15 +535,25 @@ export default function App() {
             <span>Paperwave</span>
           </div>
           <p>
-            PDF a Word en tu navegador. Hecho con PyMuPDF y pdf2docx compilados a WebAssembly.
+            PDF y Word en tu navegador. Hecho con PyMuPDF, pdf2docx y docx-preview.
           </p>
           <div className="footer-links">
+            <button
+              type="button"
+              className="effects-toggle"
+              onClick={toggleEffects}
+              aria-pressed={particlesEnabled}
+              title="Activar o desactivar las partículas ambientales"
+            >
+              <span className={`effects-dot ${particlesEnabled ? 'is-on' : ''}`} aria-hidden="true" />
+              Partículas {particlesEnabled ? 'activas' : 'inactivas'}
+            </button>
             <a
               href="https://github.com/skyneett/PDF-conversion"
               target="_blank"
               rel="noreferrer"
             >
-              <GithubIcon /> Código
+              <GithubIcon /> C��digo
             </a>
             <span>AGPL-3.0</span>
           </div>
@@ -470,17 +594,23 @@ export default function App() {
                 <section key={group.title} className="tool-group">
                   <h3>{group.title}</h3>
                   {group.items.map((tool) => {
-                    const active = tool === ACTIVE_TOOL;
+                    const nextMode = TOOL_MODES[tool];
+                    const active = Boolean(nextMode);
+                    const badge = tool === 'Word a PDF' ? 'Beta' : 'Ahora';
                     return (
                       <button
                         key={tool}
                         type="button"
-                        className={`tool-item ${active ? 'active' : ''}`}
+                        className={`tool-item ${active ? 'active' : ''} ${nextMode === mode ? 'is-current' : ''}`}
                         onClick={() => handleToolClick(tool)}
                         disabled={!active}
                       >
                         <span>{tool}</span>
-                        {active ? <span className="tool-badge">Ahora</span> : <span className="tool-soon">Pronto</span>}
+                        {active ? (
+                          <span className="tool-badge">{badge}</span>
+                        ) : (
+                          <span className="tool-soon">Pronto</span>
+                        )}
                       </button>
                     );
                   })}
@@ -489,8 +619,8 @@ export default function App() {
             </div>
 
             <p className="tools-note">
-              Por ahora solo PDF a Word está activo. El resto se irá habilitando sin cambiar de
-              arquitectura.
+              PDF a Word y Word a PDF (beta) están activos. El resto se irá habilitando sin cambiar
+              de arquitectura.
             </p>
           </div>
         </div>
