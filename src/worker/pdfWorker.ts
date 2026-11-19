@@ -1,5 +1,6 @@
 import { PyMuPDF, type PyMuPDFDocument } from '@bentopdf/pymupdf-wasm';
 import { MIN_TEXT_CHARS } from '../lib/constants';
+import { normalizeDocxLayout, type DocxContentMargins } from '../lib/docxNormalize';
 import type {
   AppErrorPayload,
   WordPageSize,
@@ -158,6 +159,7 @@ async function handleConvert(request: WorkerConvertRequest): Promise<void> {
       throw new ConvertFailure('PDF_SCANNED', 'El PDF no contiene texto seleccionable.');
     }
 
+    const contentMargins = computeContentMargins(document);
     document.close();
     document = null;
 
@@ -167,7 +169,10 @@ async function handleConvert(request: WorkerConvertRequest): Promise<void> {
       message: 'Convirtiendo a Word…'
     });
 
-    const blob = await engine.pdfToDocx(file);
+    const rawBlob = await engine.pdfToDocx(file);
+    const blob = contentMargins
+      ? await normalizeDocxLayout(rawBlob, contentMargins).catch(() => rawBlob)
+      : rawBlob;
 
     post({
       type: 'result',
@@ -252,6 +257,41 @@ function toTextBlock(value: unknown): PdfTextBlock | null {
   }
 
   return null;
+}
+
+function computeContentMargins(document: PyMuPDFDocument): DocxContentMargins | null {
+  const leftRatios: number[] = [];
+  const rightRatios: number[] = [];
+
+  for (const page of document.pages()) {
+    const width = page.width;
+    if (!width) continue;
+
+    const blocks = page.getText('blocks');
+    if (!Array.isArray(blocks)) continue;
+
+    let minLeft = Infinity;
+    let maxRight = -Infinity;
+
+    for (const value of blocks) {
+      const block = toTextBlock(value);
+      if (!block) continue;
+      minLeft = Math.min(minLeft, block.x0);
+      maxRight = Math.max(maxRight, block.x1);
+    }
+
+    if (!Number.isFinite(minLeft) || !Number.isFinite(maxRight)) continue;
+    leftRatios.push(minLeft / width);
+    rightRatios.push((width - maxRight) / width);
+  }
+
+  if (leftRatios.length === 0) return null;
+
+  const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  return {
+    leftRatio: average(leftRatios),
+    rightRatio: average(rightRatios)
+  };
 }
 
 async function findFooterBounds(
