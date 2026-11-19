@@ -1,9 +1,18 @@
 import { renderAsync } from 'docx-preview';
+import type { WordPageSize, WorkerConvertWordPage } from '../types';
 
 export interface RenderedDocx {
   css: string;
-  pages: string[];
+  pages: WorkerConvertWordPage[];
 }
+
+const PAGE_SIZES: Record<WordPageSize, { width: number; height: number }> = {
+  a4: { width: 595.28, height: 841.89 },
+  letter: { width: 612, height: 792 },
+  legal: { width: 612, height: 1008 },
+  a3: { width: 841.89, height: 1190.55 },
+  a5: { width: 419.53, height: 595.28 }
+};
 
 export class DocxRenderError extends Error {
   constructor(
@@ -16,13 +25,16 @@ export class DocxRenderError extends Error {
 }
 
 const PAGE_CSS = `
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
 section.docx {
   display: block;
   box-sizing: border-box;
-  width: auto;
-  height: 792pt;
-  min-height: 792pt;
-  padding: 72pt;
+  margin: 0;
   position: relative;
   overflow: visible;
 }
@@ -36,6 +48,47 @@ section.docx > article {
   margin: 0;
 }
 `;
+
+function parseLength(value: string | null | undefined): number | null {
+  if (!value) return null;
+
+  const match = value.trim().match(/^(-?\d+(?:\.\d+)?)(pt|px|in)?$/);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+
+  if (match[2] === 'in') return amount * 72;
+  if (match[2] === 'px') return amount * 0.75;
+  return amount;
+}
+
+function pxToPt(value: string): number {
+  const amount = Number.parseFloat(value);
+  return Number.isFinite(amount) ? amount * 0.75 : 0;
+}
+
+function detectPageSize(width: number, height: number): WordPageSize {
+  const match = (Object.entries(PAGE_SIZES) as [WordPageSize, { width: number; height: number }][]).find(
+    ([, size]) => Math.abs(size.width - width) < 2 && Math.abs(size.height - height) < 2
+  );
+
+  return match?.[0] ?? 'a4';
+}
+
+function stripWatermarks(root: HTMLElement): void {
+  for (const svg of root.querySelectorAll<SVGElement>('svg')) {
+    const style = svg.getAttribute('style') ?? '';
+    if (!/z-index\s*:\s*-\d+/i.test(style)) continue;
+
+    const parent = svg.parentElement;
+    svg.remove();
+
+    if (parent && parent.childElementCount === 0 && !parent.textContent?.trim()) {
+      parent.remove();
+    }
+  }
+}
 
 function listLevel(element: HTMLElement): number {
   if (
@@ -96,18 +149,47 @@ function normalizeLists(root: HTMLElement): void {
   }
 }
 
-function normalizePages(root: HTMLElement): HTMLElement[] {
+interface NormalizedSection {
+  element: HTMLElement;
+  pageSize: WordPageSize;
+  paddingBottom: number;
+  footerText: string;
+}
+
+function normalizePages(root: HTMLElement): NormalizedSection[] {
   const sections = Array.from(root.querySelectorAll<HTMLElement>('section.docx'));
+  const normalized: NormalizedSection[] = [];
 
   for (const section of sections) {
+    const computed = getComputedStyle(section);
+    const width =
+      parseLength(section.style.width) ??
+      parseLength(computed.width) ??
+      PAGE_SIZES.a4.width;
+    const height =
+      parseLength(section.style.minHeight) ??
+      parseLength(section.style.height) ??
+      parseLength(computed.minHeight) ??
+      parseLength(computed.height) ??
+      PAGE_SIZES.a4.height;
+    const pageSize = detectPageSize(width, height);
+    const page = PAGE_SIZES[pageSize];
+    const paddingTop = pxToPt(computed.paddingTop);
+    const paddingRight = pxToPt(computed.paddingRight);
+    const paddingBottom = pxToPt(computed.paddingBottom);
+    const paddingLeft = pxToPt(computed.paddingLeft);
+    const contentWidth = Math.max(1, page.width - paddingLeft - paddingRight);
+    const contentHeight = Math.max(1, page.height - paddingTop - paddingBottom);
+
     Object.assign(section.style, {
       display: 'block',
-      boxSizing: 'border-box',
-      width: 'auto',
-      height: '792pt',
-      minHeight: '792pt',
-      padding: '72pt',
-      position: 'relative',
+      boxSizing: 'content-box',
+      margin: '0',
+      width: `${contentWidth}pt`,
+      height: `${contentHeight}pt`,
+      minHeight: `${contentHeight}pt`,
+      padding: `${paddingTop}pt ${paddingRight}pt ${paddingBottom}pt ${paddingLeft}pt`,
+      position: 'static',
       overflow: 'visible'
     });
 
@@ -130,26 +212,22 @@ function normalizePages(root: HTMLElement): HTMLElement[] {
     if (footer) {
       Object.assign(footer.style, {
         display: 'block',
+        width: 'auto',
         margin: '0',
         minHeight: '0'
       });
+      footer.style.setProperty('--pw-footer-margin', '0.0001pt');
     }
 
-    if (header && article && footer) {
-      const sectionStyle = getComputedStyle(section);
-      const available =
-        section.clientHeight -
-        parseFloat(sectionStyle.paddingTop) -
-        parseFloat(sectionStyle.paddingBottom) -
-        header.getBoundingClientRect().height -
-        article.getBoundingClientRect().height -
-        footer.getBoundingClientRect().height;
-
-      footer.style.marginTop = `${Math.max(0, (available - 1) * 0.75)}pt`;
-    }
+    normalized.push({
+      element: section,
+      pageSize,
+      paddingBottom,
+      footerText: footer?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 80) ?? ''
+    });
   }
 
-  return sections;
+  return normalized;
 }
 
 async function assertDocx(file: File): Promise<void> {
@@ -183,6 +261,7 @@ export async function renderDocxToPages(file: File, maxPages: number): Promise<R
       inWrapper: false
     });
 
+    stripWatermarks(body);
     normalizeLists(body);
     const sections = normalizePages(body);
 
@@ -199,7 +278,12 @@ export async function renderDocxToPages(file: File, maxPages: number): Promise<R
 
     return {
       css: styles.innerHTML + `<style>${PAGE_CSS}</style>`,
-      pages: sections.map((section) => section.outerHTML)
+      pages: sections.map(({ element, pageSize, paddingBottom, footerText }) => ({
+        html: element.outerHTML,
+        pageSize,
+        paddingBottom,
+        footerText
+      }))
     };
   } catch (error: unknown) {
     if (error instanceof DocxRenderError) throw error;

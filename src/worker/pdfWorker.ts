@@ -2,7 +2,9 @@ import { PyMuPDF, type PyMuPDFDocument } from '@bentopdf/pymupdf-wasm';
 import { MIN_TEXT_CHARS } from '../lib/constants';
 import type {
   AppErrorPayload,
+  WordPageSize,
   WorkerConvertRequest,
+  WorkerConvertWordPage,
   WorkerConvertWordRequest,
   WorkerMessage,
   WorkerRequest
@@ -191,6 +193,135 @@ async function handleConvert(request: WorkerConvertRequest): Promise<void> {
   }
 }
 
+const WORD_PAGE_SIZES: Record<WordPageSize, { width: number; height: number }> = {
+  a4: { width: 595.28, height: 841.89 },
+  letter: { width: 612, height: 792 },
+  legal: { width: 612, height: 1008 },
+  a3: { width: 841.89, height: 1190.55 },
+  a5: { width: 419.53, height: 595.28 }
+};
+
+const FOOTER_MARGIN_PLACEHOLDER = /--pw-footer-margin:\s*0\.0001pt/;
+
+function buildWordHtml(
+  page: WorkerConvertWordPage,
+  css: string,
+  footerMarginTop: number
+): string {
+  const html = page.html.replace(
+    FOOTER_MARGIN_PLACEHOLDER,
+    `margin-top: ${footerMarginTop}pt`
+  );
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${html}</body></html>`;
+}
+
+interface FooterBounds {
+  top: number;
+  bottom: number;
+}
+
+interface PdfTextBlock {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  text: string;
+}
+
+function toTextBlock(value: unknown): PdfTextBlock | null {
+  if (Array.isArray(value)) {
+    const [x0, y0, x1, y1, text] = value;
+    if (typeof text !== 'string' || !text.trim()) return null;
+    return {
+      x0: Number(x0),
+      y0: Number(y0),
+      x1: Number(x1),
+      y1: Number(y1),
+      text
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    const block = value as {
+      bbox?: { x0: number; y0: number; x1: number; y1: number };
+      text?: string;
+    };
+    if (block.bbox && typeof block.text === 'string' && block.text.trim()) {
+      return { ...block.bbox, text: block.text };
+    }
+  }
+
+  return null;
+}
+
+async function findFooterBounds(
+  engine: PyMuPDF,
+  pdf: Blob,
+  footerText: string
+): Promise<FooterBounds | null> {
+  const document = await engine.open(pdf);
+
+  try {
+    const page = document.getPage(0);
+    const blocks = page.getText('blocks');
+    if (!Array.isArray(blocks)) return null;
+
+    const textBlocks = blocks
+      .map(toTextBlock)
+      .filter((block): block is PdfTextBlock => block !== null);
+    if (textBlocks.length === 0) return null;
+
+    const compact = (value: string) => value.replace(/\s+/g, '');
+    const target = compact(footerText).slice(0, 40);
+    let start = target
+      ? textBlocks.findIndex((block) => compact(block.text).includes(target))
+      : -1;
+    if (start < 0) start = textBlocks.length - 1;
+
+    const footerBlocks = textBlocks.slice(start);
+    return {
+      top: Math.min(...footerBlocks.map((block) => block.y0)),
+      bottom: Math.max(...footerBlocks.map((block) => block.y1))
+    };
+  } finally {
+    document.close();
+  }
+}
+
+async function convertWordPage(
+  engine: PyMuPDF,
+  page: WorkerConvertWordPage,
+  css: string
+): Promise<Blob> {
+  let footerMarginTop = 0;
+  let pdf = await engine.htmlToPdf(buildWordHtml(page, css, footerMarginTop), {
+    pageSize: page.pageSize,
+    margins: 0
+  });
+
+  if (!page.footerText) return pdf;
+
+  const size = WORD_PAGE_SIZES[page.pageSize];
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const bounds = await findFooterBounds(engine, pdf, page.footerText);
+    if (!bounds) return pdf;
+
+    const footerHeight = bounds.bottom - bounds.top;
+    const desiredTop = size.height - page.paddingBottom - footerHeight;
+    const delta = desiredTop - bounds.top;
+    if (delta <= 1) return pdf;
+
+    footerMarginTop += delta;
+    pdf = await engine.htmlToPdf(buildWordHtml(page, css, footerMarginTop), {
+      pageSize: page.pageSize,
+      margins: 0
+    });
+  }
+
+  return pdf;
+}
+
 async function handleConvertWord(request: WorkerConvertWordRequest): Promise<void> {
   const { css, pages, assetPath, limits } = request;
   const started = performance.now();
@@ -225,13 +356,7 @@ async function handleConvertWord(request: WorkerConvertWordRequest): Promise<voi
 
     const pdfs: Blob[] = [];
     for (const page of pages) {
-      const html = `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${page}</body></html>`;
-      pdfs.push(
-        await engine.htmlToPdf(html, {
-          pageSize: 'a4',
-          margins: 0
-        })
-      );
+      pdfs.push(await convertWordPage(engine, page, css));
     }
 
     const blob = pdfs.length === 1 ? pdfs[0] : await engine.merge(pdfs);

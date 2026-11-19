@@ -21,10 +21,19 @@ export interface WorkerConvertRequest {
   limits: ConvertLimits;
 }
 
+export type WordPageSize = 'a4' | 'letter' | 'legal' | 'a3' | 'a5';
+
+export interface WorkerConvertWordPage {
+  html: string;
+  pageSize: WordPageSize;
+  paddingBottom: number;
+  footerText: string;
+}
+
 export interface WorkerConvertWordRequest {
   type: 'convert-word';
   css: string;
-  pages: string[];
+  pages: WorkerConvertWordPage[];
   assetPath: string;
   limits: {
     maxPages: number;
