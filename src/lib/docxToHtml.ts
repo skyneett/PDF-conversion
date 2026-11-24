@@ -182,19 +182,17 @@ function normalizePages(root: HTMLElement): NormalizedSection[] {
     const paddingRight = pxToPt(computed.paddingRight);
     const paddingBottom = pxToPt(computed.paddingBottom);
     const paddingLeft = pxToPt(computed.paddingLeft);
-    const contentWidth = Math.max(1, page.width - paddingLeft - paddingRight);
-    const contentHeight = Math.max(1, page.height - paddingTop - paddingBottom);
 
     Object.assign(section.style, {
       display: 'block',
-      boxSizing: 'content-box',
+      boxSizing: 'border-box',
       margin: '0',
-      width: `${contentWidth}pt`,
-      height: `${contentHeight}pt`,
-      minHeight: `${contentHeight}pt`,
+      width: `${page.width}pt`,
+      height: `${page.height}pt`,
+      minHeight: `${page.height}pt`,
       padding: `${paddingTop}pt ${paddingRight}pt ${paddingBottom}pt ${paddingLeft}pt`,
-      position: 'static',
-      overflow: 'visible'
+      position: 'relative',
+      overflow: 'hidden'
     });
 
     const header = section.querySelector<HTMLElement>(':scope > header');
