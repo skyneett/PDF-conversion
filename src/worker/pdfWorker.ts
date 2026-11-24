@@ -1,5 +1,10 @@
 import { PyMuPDF, type PyMuPDFDocument } from '@bentopdf/pymupdf-wasm';
 import { MIN_TEXT_CHARS } from '../lib/constants';
+import {
+  applyPdfHeadersFooters,
+  compactHeaderFooterText,
+  type PdfHeaderFooterCandidates
+} from '../lib/docxHeadersFooters';
 import { normalizeDocxLayout, type DocxContentMargins } from '../lib/docxNormalize';
 import type {
   AppErrorPayload,
@@ -160,6 +165,7 @@ async function handleConvert(request: WorkerConvertRequest): Promise<void> {
     }
 
     const contentMargins = computeContentMargins(document);
+    const headerFooterCandidates = computeHeaderFooterCandidates(document);
     document.close();
     document = null;
 
@@ -170,9 +176,14 @@ async function handleConvert(request: WorkerConvertRequest): Promise<void> {
     });
 
     const rawBlob = await engine.pdfToDocx(file);
-    const blob = contentMargins
+    const normalized = contentMargins
       ? await normalizeDocxLayout(rawBlob, contentMargins).catch(() => rawBlob)
       : rawBlob;
+    const blob = headerFooterCandidates
+      ? await applyPdfHeadersFooters(normalized, headerFooterCandidates).catch(
+          () => normalized
+        )
+      : normalized;
 
     post({
       type: 'result',
@@ -291,6 +302,224 @@ function computeContentMargins(document: PyMuPDFDocument): DocxContentMargins | 
   return {
     leftRatio: average(leftRatios),
     rightRatio: average(rightRatios)
+  };
+}
+
+interface PdfLineAggregate {
+  compact: string;
+  y0: number;
+  y1: number;
+  font: string;
+  size: number;
+  color: number;
+  pages: Set<number>;
+  occurrences: Map<number, { y0: number; y1: number }>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  if (value instanceof Map) return Object.fromEntries(value);
+  return value as Record<string, unknown>;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readBbox(value: unknown): { x0: number; y0: number; x1: number; y1: number } | null {
+  if (Array.isArray(value) && value.length >= 4) {
+    return {
+      x0: Number(value[0]),
+      y0: Number(value[1]),
+      x1: Number(value[2]),
+      y1: Number(value[3])
+    };
+  }
+
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    x0: Number(record.x0),
+    y0: Number(record.y0),
+    x1: Number(record.x1),
+    y1: Number(record.y1)
+  };
+}
+
+function maxPageExtent(lines: PdfLineAggregate[]): number {
+  const extents = new Map<number, { top: number; bottom: number }>();
+
+  for (const line of lines) {
+    for (const [page, position] of line.occurrences) {
+      const current = extents.get(page) ?? { top: Infinity, bottom: -Infinity };
+      current.top = Math.min(current.top, position.y0);
+      current.bottom = Math.max(current.bottom, position.y1);
+      extents.set(page, current);
+    }
+  }
+
+  let max = 0;
+  for (const extent of extents.values()) {
+    max = Math.max(max, extent.bottom - extent.top);
+  }
+  return max;
+}
+
+function lineParity(pages: Set<number>): 'odd' | 'even' | 'both' {
+  const values = [...pages];
+  const odd = values.every((page) => page % 2 === 0);
+  const even = values.every((page) => page % 2 === 1);
+  if (odd && !even) return 'odd';
+  if (even && !odd) return 'even';
+  return 'both';
+}
+
+function addCandidate(
+  target: { odd: string[]; even: string[] },
+  parity: 'odd' | 'even' | 'both',
+  value: string
+): void {
+  if ((parity === 'odd' || parity === 'both') && !target.odd.includes(value)) {
+    target.odd.push(value);
+  }
+  if ((parity === 'even' || parity === 'both') && !target.even.includes(value)) {
+    target.even.push(value);
+  }
+}
+
+function computeHeaderFooterCandidates(
+  document: PyMuPDFDocument
+): PdfHeaderFooterCandidates | null {
+  const lines = new Map<string, PdfLineAggregate>();
+  let pageHeightTotal = 0;
+  let pageHeightCount = 0;
+
+  for (let pageIndex = 0; pageIndex < document.pageCount; pageIndex += 1) {
+    const page = document.getPage(pageIndex);
+    if (page.height > 0) {
+      pageHeightTotal += page.height;
+      pageHeightCount += 1;
+    }
+
+    let parsed: unknown;
+    try {
+      const raw = page.getText('json');
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      continue;
+    }
+
+    const record = asRecord(parsed);
+    for (const blockValue of asArray(record?.blocks)) {
+      const block = asRecord(blockValue);
+      for (const lineValue of asArray(block?.lines)) {
+        const line = asRecord(lineValue);
+        if (!line) continue;
+
+        const spans = asArray(line.spans);
+        let text = '';
+        for (const spanValue of spans) {
+          const span = asRecord(spanValue);
+          if (typeof span?.text === 'string') text += span.text;
+        }
+
+        const compact = compactHeaderFooterText(text);
+        if (!compact) continue;
+
+        const bbox = readBbox(line.bbox);
+        if (!bbox || !Number.isFinite(bbox.y0) || !Number.isFinite(bbox.y1)) continue;
+
+        const firstSpan = asRecord(spans[0]);
+        const font = typeof firstSpan?.font === 'string' ? firstSpan.font : '';
+        const size = Number(firstSpan?.size ?? 0);
+        const color = Number(firstSpan?.color ?? 0);
+        const existing = lines.get(compact);
+
+        if (existing) {
+          existing.y0 = Math.min(existing.y0, bbox.y0);
+          existing.y1 = Math.max(existing.y1, bbox.y1);
+          existing.pages.add(pageIndex);
+          existing.occurrences.set(pageIndex, { y0: bbox.y0, y1: bbox.y1 });
+        } else {
+          lines.set(compact, {
+            compact,
+            y0: bbox.y0,
+            y1: bbox.y1,
+            font,
+            size,
+            color,
+            pages: new Set([pageIndex]),
+            occurrences: new Map([[pageIndex, { y0: bbox.y0, y1: bbox.y1 }]])
+          });
+        }
+      }
+    }
+  }
+
+  if (lines.size === 0 || pageHeightCount === 0) return null;
+  const pageHeight = pageHeightTotal / pageHeightCount;
+
+  const styleCounts = new Map<string, number>();
+  for (const line of lines.values()) {
+    const style = `${line.font}|${Math.round(line.size * 10)}|${line.color}`;
+    styleCounts.set(style, (styleCounts.get(style) ?? 0) + 1);
+  }
+
+  let bodyStyle = '';
+  let bodyStyleCount = -1;
+  for (const [style, count] of styleCounts) {
+    if (count > bodyStyleCount) {
+      bodyStyle = style;
+      bodyStyleCount = count;
+    }
+  }
+
+  const headers = { odd: [] as string[], even: [] as string[] };
+  const footers = { odd: [] as string[], even: [] as string[] };
+  const headerLines: PdfLineAggregate[] = [];
+  const footerLines: PdfLineAggregate[] = [];
+  let headerTop = Infinity;
+  let headerBottom = -Infinity;
+  let footerTop = Infinity;
+  let footerBottom = -Infinity;
+
+  for (const line of lines.values()) {
+    if (line.pages.size < 2 || line.compact.length < 8) continue;
+    const style = `${line.font}|${Math.round(line.size * 10)}|${line.color}`;
+    if (style === bodyStyle) continue;
+
+    const isTop = line.y1 <= pageHeight * 0.25;
+    const isBottom = line.y0 >= pageHeight * 0.55;
+    if (!isTop && !isBottom) continue;
+
+    const parity = lineParity(line.pages);
+    if (isTop) {
+      addCandidate(headers, parity, line.compact);
+      headerLines.push(line);
+      headerTop = Math.min(headerTop, line.y0);
+      headerBottom = Math.max(headerBottom, line.y1);
+    } else {
+      addCandidate(footers, parity, line.compact);
+      footerLines.push(line);
+      footerTop = Math.min(footerTop, line.y0);
+      footerBottom = Math.max(footerBottom, line.y1);
+    }
+  }
+
+  if (headers.odd.length === 0 && headers.even.length === 0 && footers.odd.length === 0 && footers.even.length === 0) {
+    return null;
+  }
+
+  return {
+    headers,
+    footers,
+    headerTop: Number.isFinite(headerTop) ? headerTop : 0,
+    headerBottom: Number.isFinite(headerBottom) ? headerBottom : 0,
+    headerHeight: maxPageExtent(headerLines),
+    footerTop: Number.isFinite(footerTop) ? footerTop : 0,
+    footerBottom: Number.isFinite(footerBottom) ? footerBottom : 0,
+    footerHeight: maxPageExtent(footerLines),
+    pageHeight
   };
 }
 

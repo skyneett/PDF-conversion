@@ -3,6 +3,7 @@ dist/
 public/assets/pymupdf/
 coverage/
 .vite/
+.playwright-mcp/
 .env
 .env.*
 !.env.example
