@@ -1,4 +1,8 @@
 import { renderAsync } from 'docx-preview';
+import {
+  prepareDocxPageFields,
+  replacePagePlaceholders
+} from './docxPageFields';
 import type { WordPageSize, WorkerConvertWordPage } from '../types';
 
 export interface RenderedDocx {
@@ -239,6 +243,7 @@ async function assertDocx(file: File): Promise<void> {
 
 export async function renderDocxToPages(file: File, maxPages: number): Promise<RenderedDocx> {
   await assertDocx(file);
+  const prepared = await prepareDocxPageFields(file);
 
   const wrapper = document.createElement('div');
   wrapper.style.cssText =
@@ -250,7 +255,7 @@ export async function renderDocxToPages(file: File, maxPages: number): Promise<R
   document.body.append(wrapper);
 
   try {
-    await renderAsync(file, body, styles, {
+    await renderAsync(prepared, body, styles, {
       useBase64URL: true,
       renderHeaders: true,
       renderFooters: true,
@@ -274,6 +279,14 @@ export async function renderDocxToPages(file: File, maxPages: number): Promise<R
         'DOCX_TOO_MANY_PAGES',
         `El Word tiene ${sections.length} páginas y el máximo es ${maxPages}.`
       );
+    }
+
+    const totalPages = sections.length;
+    for (const [index, section] of sections.entries()) {
+      replacePagePlaceholders(section.element, index + 1, totalPages);
+      const footer = section.element.querySelector<HTMLElement>(':scope > footer');
+      section.footerText =
+        footer?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 80) ?? '';
     }
 
     return {

@@ -216,7 +216,8 @@ function wrapPart(tag: 'hdr' | 'ftr', attributes: string, paragraphs: DocxParagr
 }
 
 function removeParagraphs(xml: string, paragraphs: DocxParagraph[]): string {
-  const ordered = [...paragraphs].sort((left, right) => right.start - left.start);
+  const unique = [...new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph])).values()];
+  const ordered = unique.sort((left, right) => right.start - left.start);
   let result = xml;
 
   for (const paragraph of ordered) {

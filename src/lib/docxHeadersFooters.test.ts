@@ -128,6 +128,32 @@ describe('applyPdfHeadersFooters', () => {
     expect(footerOdd).not.toContain('FOOTER ODD ALT');
   });
 
+  it('no elimina contenido cuando el mismo header aplica a pares e impares', async () => {
+    const customDocument = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>
+<w:p><w:r><w:t>HEADER BOTH</w:t></w:r></w:p>
+<w:p><w:r><w:t>BODY ONE</w:t></w:r></w:p>
+<w:p><w:r><w:t>HEADER BOTH</w:t></w:r></w:p>
+<w:p><w:r><w:t>BODY TWO</w:t></w:r></w:p>
+<w:sectPr><w:pgSz w:w="11900" w:h="16840"/><w:pgMar w:top="0" w:right="1680" w:bottom="0" w:left="1680" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body></w:document>`;
+
+    const result = await applyPdfHeadersFooters(await buildDocx(customDocument), {
+      ...CANDIDATES,
+      headers: { odd: ['headerboth'], even: ['headerboth'] },
+      footers: { odd: [], even: [] }
+    });
+    const documentXml = await readPart(result, 'word/document.xml');
+    const headerOdd = await readPart(result, 'word/headerPwOdd.xml');
+    const headerEven = await readPart(result, 'word/headerPwEven.xml');
+
+    expect(documentXml).toContain('BODY ONE');
+    expect(documentXml).toContain('BODY TWO');
+    expect(documentXml).not.toContain('HEADER BOTH');
+    expect(headerOdd).toContain('HEADER BOTH');
+    expect(headerEven).toContain('HEADER BOTH');
+  });
+
   it('devuelve el original si no hay párrafos que coincidan', async () => {
     const blob = await buildDocx();
     const result = await applyPdfHeadersFooters(blob, {
